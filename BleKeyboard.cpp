@@ -1,9 +1,6 @@
-#include "BleKeyboard.h"
-
 #if defined(USE_NIMBLE)
 #include <NimBLEDevice.h>
 #include <NimBLEServer.h>
-#include <NimBLEUtils.h>
 #include <NimBLEHIDDevice.h>
 #else
 #include <BLEDevice.h>
@@ -13,16 +10,20 @@
 #include "BLEHIDDevice.h"
 #endif // USE_NIMBLE
 #include "HIDTypes.h"
-#include <driver/adc.h>
 #include "sdkconfig.h"
 
+#include "BleKeyboard.h"
+#include <Arduino.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include "esp_timer.h"
+#endif
 
 #if defined(CONFIG_ARDUHAL_ESP_LOG)
   #include "esp32-hal-log.h"
-  #define LOG_TAG ""
+  #define LOG_TAG "BleKeyboard"
 #else
   #include "esp_log.h"
-  static const char* LOG_TAG = "BLEDevice";
+  static const char* LOG_TAG = "BleKeyboard";
 #endif
 
 
@@ -69,7 +70,7 @@ static const uint8_t _hidReportDescriptor[] = {
   USAGE_PAGE(1),      0x0C,          // USAGE_PAGE (Consumer)
   USAGE(1),           0x01,          // USAGE (Consumer Control)
   COLLECTION(1),      0x01,          // COLLECTION (Application)
-  REPORT_ID(1),       MEDIA_KEYS_ID, //   REPORT_ID (3)
+  REPORT_ID(1),       MEDIA_KEYS_ID, //   REPORT_ID (2)
   USAGE_PAGE(1),      0x0C,          //   USAGE_PAGE (Consumer)
   LOGICAL_MINIMUM(1), 0x00,          //   LOGICAL_MINIMUM (0)
   LOGICAL_MAXIMUM(1), 0x01,          //   LOGICAL_MAXIMUM (1)
@@ -99,14 +100,21 @@ BleKeyboard::BleKeyboard(std::string deviceName, std::string deviceManufacturer,
     : hid(0)
     , deviceName(std::string(deviceName).substr(0, 15))
     , deviceManufacturer(std::string(deviceManufacturer).substr(0,15))
-    , batteryLevel(batteryLevel) {}
+    , batteryLevel(batteryLevel)
+    , connected(false)
+    , _delay_ms(0) {}
 
 void BleKeyboard::begin(void)
 {
+  #if defined(USE_NIMBLE)
   BLEDevice::init(deviceName);
+#else
+  BLEDevice::init(String(deviceName.c_str()));
+#endif
   BLEServer* pServer = BLEDevice::createServer();
   pServer->setCallbacks(this);
 
+  // BLEHIDDevice is allocated for the lifetime of the application.
   hid = new BLEHIDDevice(pServer);
   inputKeyboard = hid->inputReport(KEYBOARD_ID);  // <-- input REPORTID from report map
   outputKeyboard = hid->outputReport(KEYBOARD_ID);
@@ -114,22 +122,22 @@ void BleKeyboard::begin(void)
 
   outputKeyboard->setCallbacks(this);
 
+  #if defined(USE_NIMBLE)
   hid->manufacturer()->setValue(deviceManufacturer);
+#else
+  hid->manufacturer()->setValue(String(deviceManufacturer.c_str()));
+#endif
 
-  hid->pnp(0x02, vid, pid, version);
+  hid->pnp(0x02, 0xe502, 0xa111, 0x0210);
   hid->hidInfo(0x00, 0x01);
 
-
-#if defined(USE_NIMBLE)
-
-  BLEDevice::setSecurityAuth(true, true, true);
-
+  #if defined(USE_NIMBLE)
+  // Configure NimBLE security: bonding enabled, no MITM, secure connections on
+  NimBLEDevice::setSecurityAuth(true, false, true);
 #else
-
-  BLESecurity* pSecurity = new BLESecurity();
-  pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
-
-#endif // USE_NIMBLE
+  // Security configuration disabled to avoid compatibility issues with BLE v3.3.0.
+  // BLESecurity usage removed; using default security configuration.
+#endif
 
   hid->reportMap((uint8_t*)_hidReportDescriptor, sizeof(_hidReportDescriptor));
   hid->startServices();
@@ -174,28 +182,13 @@ void BleKeyboard::setDelay(uint32_t ms) {
   this->_delay_ms = ms;
 }
 
-void BleKeyboard::set_vendor_id(uint16_t vid) { 
-	this->vid = vid; 
-}
-
-void BleKeyboard::set_product_id(uint16_t pid) { 
-	this->pid = pid; 
-}
-
-void BleKeyboard::set_version(uint16_t version) { 
-	this->version = version; 
-}
-
 void BleKeyboard::sendReport(KeyReport* keys)
 {
   if (this->isConnected())
   {
     this->inputKeyboard->setValue((uint8_t*)keys, sizeof(KeyReport));
     this->inputKeyboard->notify();
-#if defined(USE_NIMBLE)        
-    // vTaskDelay(delayTicks);
     this->delay_ms(_delay_ms);
-#endif // USE_NIMBLE
   }	
 }
 
@@ -205,15 +198,10 @@ void BleKeyboard::sendReport(MediaKeyReport* keys)
   {
     this->inputMediaKeys->setValue((uint8_t*)keys, sizeof(MediaKeyReport));
     this->inputMediaKeys->notify();
-#if defined(USE_NIMBLE)        
-    //vTaskDelay(delayTicks);
     this->delay_ms(_delay_ms);
-#endif // USE_NIMBLE
   }	
 }
 
-extern
-const uint8_t _asciimap[128] PROGMEM;
 
 #define SHIFT 0x80
 const uint8_t _asciimap[128] =
@@ -350,7 +338,6 @@ const uint8_t _asciimap[128] =
 };
 
 
-uint8_t USBPutChar(uint8_t c);
 
 // press() adds the specified key (printing, non-printing, or modifier)
 // to the persistent key report and sends the report.  Because of the way
@@ -365,7 +352,7 @@ size_t BleKeyboard::press(uint8_t k)
 		_keyReport.modifiers |= (1<<(k-128));
 		k = 0;
 	} else {				// it's a printing key
-		k = pgm_read_byte(_asciimap + k);
+		k = _asciimap[k];
 		if (!k) {
 			setWriteError();
 			return 0;
@@ -422,7 +409,7 @@ size_t BleKeyboard::release(uint8_t k)
 		_keyReport.modifiers &= ~(1<<(k-128));
 		k = 0;
 	} else {				// it's a printing key
-		k = pgm_read_byte(_asciimap + k);
+		k = _asciimap[k];
 		if (!k) {
 			return 0;
 		}
@@ -502,46 +489,32 @@ size_t BleKeyboard::write(const uint8_t *buffer, size_t size) {
 
 void BleKeyboard::onConnect(BLEServer* pServer) {
   this->connected = true;
-
-#if !defined(USE_NIMBLE)
-
-  BLE2902* desc = (BLE2902*)this->inputKeyboard->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-  desc->setNotifications(true);
-  desc = (BLE2902*)this->inputMediaKeys->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-  desc->setNotifications(true);
-
-#endif // !USE_NIMBLE
-
 }
 
 void BleKeyboard::onDisconnect(BLEServer* pServer) {
   this->connected = false;
-
-#if !defined(USE_NIMBLE)
-
-  BLE2902* desc = (BLE2902*)this->inputKeyboard->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-  desc->setNotifications(false);
-  desc = (BLE2902*)this->inputMediaKeys->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-  desc->setNotifications(false);
-
-  advertising->start();
-
-#endif // !USE_NIMBLE
+  if (advertising) {
+    this->delay_ms(500);
+    ESP_LOGD(LOG_TAG, "Restarting advertising after disconnect");
+    advertising->start();
+    ESP_LOGD(LOG_TAG, "Advertising restarted");
+  }
 }
 
 void BleKeyboard::onWrite(BLECharacteristic* me) {
-  uint8_t* value = (uint8_t*)(me->getValue().c_str());
-  (void)value;
-  ESP_LOGI(LOG_TAG, "special keys: %d", *value);
+  std::string s(me->getValue().c_str());
+  if (!s.empty()) {
+    ESP_LOGI(LOG_TAG, "special keys: %d", static_cast<uint8_t>(s[0]));
+  } else {
+    ESP_LOGI(LOG_TAG, "special keys: <empty>");
+  }
 }
 
 void BleKeyboard::delay_ms(uint64_t ms) {
-  uint64_t m = esp_timer_get_time();
-  if(ms){
-    uint64_t e = (m + (ms * 1000));
-    if(m > e){ //overflow
-        while(esp_timer_get_time() > e) { }
-    }
-    while(esp_timer_get_time() < e) {}
-  }
+  if (!ms) return;
+#if defined(ARDUINO_ARCH_ESP32)
+  vTaskDelay(pdMS_TO_TICKS(ms));
+#else
+  delay((unsigned long)ms);
+#endif
 }
