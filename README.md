@@ -1,4 +1,5 @@
 # ESP32 BLE Keyboard library
+# This fork modifies the library to ensure compatibility with version 3.3.0 of the ESP32 boards library.
 
 This library allows you to make the ESP32 act as a Bluetooth Keyboard and control what it does.  
 You might also be interested in:
@@ -22,9 +23,15 @@ You might also be interested in:
 
 ## Installation
 - (Make sure you can use the ESP32 with the Arduino IDE. [Instructions can be found here.](https://github.com/espressif/arduino-esp32#installation-instructions))
-- [Download the latest release of this library from the release page.](https://github.com/T-vK/ESP32-BLE-Keyboard/releases)
+- Download this repository as a ZIP from GitHub (Code -> Download ZIP) from your fork, or clone it into your Arduino libraries folder.
 - In the Arduino IDE go to "Sketch" -> "Include Library" -> "Add .ZIP Library..." and select the file you just downloaded.
 - You can now go to "File" -> "Examples" -> "ESP32 BLE Keyboard" and select any of the examples to get started.
+
+## Examples
+
+Open via Arduino IDE: File -> Examples -> ESP32 BLE Keyboard
+
+- SendKeyStrokes — Demonstrates sending text, Enter, Play/Pause media key, and Ctrl+Alt+Delete in a loop. Path: [examples/SendKeyStrokes/SendKeyStrokes.ino](examples/SendKeyStrokes/SendKeyStrokes.ino)
 
 ## Example
 
@@ -58,18 +65,13 @@ void loop() {
     bleKeyboard.write(KEY_MEDIA_PLAY_PAUSE);
 
     delay(1000);
-    
-   //
-   // Below is an example of pressing multiple keyboard modifiers 
-   // which by default is commented out. 
-   // 
-   /* Serial.println("Sending Ctrl+Alt+Delete...");
+
+    Serial.println("Sending Ctrl+Alt+Delete...");
     bleKeyboard.press(KEY_LEFT_CTRL);
     bleKeyboard.press(KEY_LEFT_ALT);
     bleKeyboard.press(KEY_DELETE);
     delay(100);
     bleKeyboard.releaseAll();
-    */
 
   }
   Serial.println("Waiting 5 seconds...");
@@ -137,21 +139,20 @@ Flash: [====      ]  44.2% (used 579158 bytes from 1310720 bytes)
 | `ESP.getFreeHeap()`   | 143.572 | 260.764 | **+ 117.192** |
 | `ESP.getSketchSize()` | 994.224 | 579.264 | **- 414.960** |
 
-## How to activate NimBLE mode?
+### How to activate NimBLE mode?
 
-### ArduinoIDE: 
-Uncomment the first line in BleKeyboard.h
+ArduinoIDE: Before including the library, insert the line `#define USE_NIMBLE`
 ```C++
 #define USE_NIMBLE
+#include <BleKeyboard.h>
 ```
 
-### PlatformIO:
-Change your `platformio.ini` to the following settings
+PlatformIO: Change your `platformio.ini` to the following settings
 ```ini
 lib_deps = 
   NimBLE-Arduino
 
-build_flags = 
+build-flags = 
   -D USE_NIMBLE
 ```
 
